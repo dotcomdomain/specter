@@ -14,7 +14,7 @@
     "build:inotifyd": "bash deps/inotifyd/build.sh"
   },
   "devDependencies": {
-    "happy-dom": "^20.9.0",
+    "happy-dom": "^21.0.4",
     "typescript": "^6.0.3",
     "vite": "^8.0.4",
     "vitest": "^4.1.8"
