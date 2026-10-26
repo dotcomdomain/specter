@@ -16,18 +16,7 @@ rm -f "$SPECTER_DIR/.hotinstall_failed"
   log_i "HOT" "Hot-install live-apply starting"
 
   # Kill the boot-time scheduler + its inotifyd children (pre-update code).
-  if [ -f "$SPECTER_DIR/scheduler.pid" ]; then
-    _old_pid="$(cat "$SPECTER_DIR/scheduler.pid" 2>/dev/null || true)"
-    if [ -n "$_old_pid" ]; then
-      for _child in $(pgrep -P "$_old_pid" 2>/dev/null || true); do
-        kill "$_child" 2>/dev/null || true
-      done
-      unset _child
-      kill "$_old_pid" 2>/dev/null || true
-    fi
-    rm -f "$SPECTER_DIR/scheduler.pid" 2>/dev/null || true
-    unset _old_pid
-  fi
+  stop_specter_scheduler
 
   if [ "$(cfg_get toggle_scheduler 1)" != "0" ]; then
     sh "$MODDIR/lib/scheduler.sh" >"$SPECTER_DIR/log/scheduler.log" 2>&1 &

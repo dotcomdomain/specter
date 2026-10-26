@@ -18,7 +18,7 @@ echo "=============================================="
 
 for tf in "${TESTS[@]}"; do
   [ ! -f "$tf" ] && echo "  SKIP  $tf" && continue
-  ( . ./mock_env.sh; . ./helpers.sh 2>/dev/null; set +e; . "$tf" )
+  ( . ./mock_env.sh; trap cleanup EXIT; . ./helpers.sh 2>/dev/null; set +e; . "$tf" )
 done
 
 echo "=============================================="

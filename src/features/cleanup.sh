@@ -5,12 +5,14 @@ MODDIR=${0%/*}
 . "$MODDIR/../lib/constants.sh"
 
 MODE="${1:-full}"
+case "$MODE" in full|logs-only) ;; *) die "Unknown cleanup mode: $MODE" ;; esac
 
 log_i "CLEANUP" "Starting cleanup (mode=$MODE)"
 
 # Safety watchdog: self-terminate if we run too long
 (sleep 30 && kill "$$" 2>/dev/null) &
 _watchdog_pid="$!"
+trap 'kill "${_watchdog_pid:-}" 2>/dev/null || true' EXIT
 
 case "$MODE" in
   logs-only)

@@ -3,9 +3,11 @@ set -e
 MODDIR=${0%/*}
 . "$MODDIR/../lib/common.sh"
 OUTPUT="$SPECTER_DIR/app_labels.json"
-TMP="$SPECTER_DIR/.app_labels.tmp"
+TMP=""
 
 mkdir -p "$SPECTER_DIR"
+TMP=$(mktemp "$SPECTER_DIR/.app_labels.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
 
 log_i "APP_INFO" "Resolving app labels for all user packages"
 
@@ -20,7 +22,7 @@ for pkg in $(pm list packages -3 2>/dev/null | cut -d: -f2); do
     | sed 's/ [a-zA-Z0-9_.-]*=.*//' \
     | head -1)
   [ -z "$label" ] && label="$pkg"
-  label=$(printf '%s' "$label" | sed 's/"/\\"/g')
+  label=$(_escape_json "$label")
   printf '%s"%s":"%s"' "$sep" "$pkg" "$label" >> "$TMP"
   sep=","
   _count=$((_count + 1))

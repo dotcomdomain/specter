@@ -77,7 +77,7 @@ _total=0
 for _lf in "$LOG_DIR"/*; do
   [ -f "$_lf" ] && _total=$((_total + $(stat -c%s "$_lf" 2>/dev/null || echo 0)))
 done
-echo "  Total: $(_total / 1024 2>/dev/null || echo 0) KB ($_total bytes)"
+echo "  Total: $((_total / 1024)) KB ($_total bytes)"
 echo ""
 
 echo "=== logcat (last 20 Specter lines) ==="

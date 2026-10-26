@@ -51,17 +51,18 @@ export function runScript(scriptName: string, type = 'feature'): Promise<ScriptR
     const globalName = genCallbackName();
     const timer = setTimeout(() => { deleteGlobal(globalName); reject(new TimeoutError()); }, EXEC_TIMEOUT_MS);
 
-    setGlobal(globalName, (code: unknown, stdout: unknown) => {
+    setGlobal(globalName, (code: unknown, stdout: unknown, stderr: unknown) => {
       clearTimeout(timer); deleteGlobal(globalName);
       if (typeof code === 'number') {
-        resolve({ success: code === 0, output: typeof stdout === 'string' ? stdout : '', rawOutput: typeof stdout === 'string' ? stdout : '' });
+        const output = [stdout, stderr].filter(v => typeof v === 'string' && v).join('\n');
+        resolve({ success: code === 0, output, rawOutput: output });
       } else if (typeof code === 'string' && code) {
         try {
           const json = JSON.parse(code);
-          if (json.success !== false) {
+          if (json.success !== false && (typeof json.code !== 'number' || json.code === 0)) {
             resolve({ success: true, output: json.result || json.stdout || json.output || '', rawOutput: code });
           } else {
-            reject(new ScriptError({ success: false, output: json.stdout || json.result || '', rawOutput: code }));
+            reject(new ScriptError({ success: false, output: json.stderr || json.error || json.stdout || json.result || '', rawOutput: code }));
           }
         } catch {
           resolve({ success: false, output: code, rawOutput: code });
@@ -136,7 +137,10 @@ export function spawnScript(scriptName: string, type = 'feature'): ChildProcess 
     const globalName = genCallbackName();
     setGlobal(globalName, child);
     const cleanup = () => deleteGlobal(globalName);
-    const timer = setTimeout(cleanup, EXEC_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      (child as any).emit('error', new TimeoutError());
+      cleanup();
+    }, EXEC_TIMEOUT_MS);
     (child as any).on('exit', () => { clearTimeout(timer); cleanup(); });
     (child as any).on('error', () => { clearTimeout(timer); cleanup(); });
     try { window.ksu.spawn('sh', JSON.stringify([scriptPath]), '{}', globalName); }

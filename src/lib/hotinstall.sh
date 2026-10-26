@@ -6,7 +6,7 @@ specter_hot_install() {
   [ "$ROOT_SOL" = "kernelsu" ] || return 0
 
   _hi_modid="$(basename "${MODPATH:-}")"
-  [ -n "$_hi_modid" ] || return 0
+  case "$_hi_modid" in ""|.|..|*[!A-Za-z0-9_.-]*) return 1 ;; esac
   _hi_live="$MODULES_BASE/$_hi_modid"
   _hi_stage="${MODULES_BASE}_update/$_hi_modid"
 
@@ -16,8 +16,19 @@ specter_hot_install() {
 
   ui_print "- Hot install requested ($ROOT_TYPE)"
 
-  rm -rf "$_hi_live"
-  mv "$_hi_stage" "$_hi_live"
+  # Preserve the working module if the staged rename fails. Both directories
+  # are on the adb filesystem, so these moves do not require a second copy.
+  _hi_backup="$MODULES_BASE/.$_hi_modid.previous.$$"
+  if ! mv "$_hi_live" "$_hi_backup"; then
+    ui_print "- ERROR: could not preserve the installed module"
+    return 1
+  fi
+  if ! mv "$_hi_stage" "$_hi_live"; then
+    mv "$_hi_backup" "$_hi_live" || ui_print "- ERROR: restore the module from $_hi_backup"
+    ui_print "- ERROR: could not activate the staged module"
+    return 1
+  fi
+  rm -rf "$_hi_backup"
 
   # Clear the token so the next reboot won't re-run first_boot_setup over this.
   rm -f "$SPECTER_DIR/.first_boot_pending" 2>/dev/null || true
@@ -48,5 +59,5 @@ specter_hot_install() {
     ui_print "- No need to reboot"
   fi
 
-  unset _hi_modid _hi_live _hi_stage _hi_apply_failed _hi_delay
+  unset _hi_modid _hi_live _hi_stage _hi_backup _hi_apply_failed _hi_delay
 }

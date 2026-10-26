@@ -28,6 +28,7 @@ refresh_module_description() {
     _kb_src=$(echo "$_kb_info" | grep -o '"source": *"[^"]*"' | cut -d'"' -f4) || true
     _kb_ver=$(echo "$_kb_info" | grep -o '"text": *"[^"]*"' | cut -d'"' -f4) || true
     _kb_rev=$(echo "$_kb_info" | grep -o '"revoked": *true') || true
+    _kb_unverified=$(echo "$_kb_info" | grep -o '"revocation_checked": *false') || true
     _kb_soft=$(echo "$_kb_info" | grep -o '"softbanned": *true') || true
 
     [ -z "$_kb_src" ] && _kb_src=$(cfg_get 'keybox_provider' '')
@@ -36,7 +37,7 @@ refresh_module_description() {
     _apps=$(ksm_read_targets 2>/dev/null | sort -u | wc -l)
     _patch=$(ksm_get_security_patch 2>/dev/null) || _patch=""
     if [ "$KSM_FORMAT" = "json" ] && [ "${_apps:-0}" -eq 0 ]; then
-      unset _problems _cf _new_desc _escaped _kb_info _kb_src _kb_ver _kb_rev _kb_soft _apps _patch _title _ksud
+      unset _problems _cf _new_desc _escaped _kb_info _kb_src _kb_ver _kb_rev _kb_soft _kb_unverified _apps _patch _title _ksud
       return 0
     fi
     [ -z "$_patch" ] && _patch="-"
@@ -49,7 +50,7 @@ refresh_module_description() {
       fi
       if [ -n "$_kb_rev" ]; then
         _new_desc="🔑 $_title · ❌ | $_apps apps | 🛡️ $_patch"
-      elif [ -n "$_kb_soft" ]; then
+      elif [ -n "$_kb_soft" ] || [ -n "$_kb_unverified" ]; then
         _new_desc="🔑 $_title · ⚠️ | $_apps apps | 🛡️ $_patch"
       else
         _new_desc="🔑 $_title · ✅ | $_apps apps | 🛡️ $_patch"
@@ -70,5 +71,5 @@ refresh_module_description() {
     "$_ksud" module config set override.description "$_new_desc" 2>/dev/null || true
   done
 
-  unset _problems _cf _new_desc _escaped _kb_info _kb_src _kb_ver _kb_rev _kb_soft _apps _patch _title _ksud
+  unset _problems _cf _new_desc _escaped _kb_info _kb_src _kb_ver _kb_rev _kb_soft _kb_unverified _apps _patch _title _ksud
 }

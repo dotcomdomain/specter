@@ -7,6 +7,7 @@ case "$MODDIR" in */lib) MODDIR="${MODDIR%/lib}" ;; */features) MODDIR="${MODDIR
 . "$MODDIR/lib/common.sh"
 . "$MODDIR/lib/constants.sh"
 . "$MODDIR/lib/desc.sh"
+. "$MODDIR/lib/scheduler_state.sh"
 
 PID_FILE="$SPECTER_DIR/scheduler.pid"
 TASKS_DIR="$SPECTER_DIR/scheduler_tasks"
@@ -83,10 +84,12 @@ while true; do
     [ "$(cfg_get "$_toggle" "$_toggle_default")" = "0" ] && continue
 
     _last_run=$(cat "$TASKS_DIR/${_name}_last" 2>/dev/null || echo "0")
-    _cfg_interval=$(cfg_get "${_name}_interval" "$_default_interval")
-    [ "$_cfg_interval" -lt 10 ] && _cfg_interval=10
+    _cfg_interval=$(scheduler_interval "$(cfg_get "${_name}_interval" "$_default_interval")" "$_default_interval")
+    _last_run=$(scheduler_last_run "$_last_run" "$_now")
 
-    if [ "$_now" -ge "$((_last_run + _cfg_interval))" ]; then
+    # Compare elapsed time: adding a large interval to an epoch timestamp can
+    # overflow Android mksh's signed 32-bit arithmetic and run every minute.
+    if [ "$((_now - _last_run))" -ge "$_cfg_interval" ]; then
       log_rotate "$SPECTER_DIR/log/sched_${_name}.log"
       log_i "SCHED" "Running $_name"
       if [ "$_name" = "hma" ]; then

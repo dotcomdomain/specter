@@ -3,22 +3,13 @@ set -e
 MODDIR=${0%/*}
 . "$MODDIR/lib/common.sh"
 
+# Stop background writes before deleting configuration, logs or restored state.
+stop_specter_scheduler
+
 
 if [ -d "$CONFIG_DIR" ]; then
     rm -rf "$CONFIG_DIR" 2>/dev/null
     log_i "UNINSTALL" "Removed $CONFIG_DIR"
-fi
-
-# Restore persisted props, format: restore|prop_name|prop_value
-if [ -f "$SPECTER_DIR/persist_backup.txt" ]; then
-  while IFS='|' read -r _pr_cmd _pr_name _pr_val; do
-    [ "$_pr_cmd" = "restore" ] || continue
-    [ -n "$_pr_name" ] || continue
-    resetprop -n -p "$_pr_name" "$_pr_val" 2>/dev/null || true
-    log_d "UNINSTALL" "Restored prop: $_pr_name"
-  done < "$SPECTER_DIR/persist_backup.txt"
-  rm -f "$SPECTER_DIR/persist_backup.txt" 2>/dev/null
-  log_i "UNINSTALL" "All persistent props restored"
 fi
 
 # Clean up any persist props the module may have set or deleted
@@ -39,6 +30,19 @@ done << PROPS
 $(getprop 2>/dev/null | grep -E "(pixelprops|pihooks)" | sed "s/^\[\(.*\)\]:.*/\1/" || true)
 PROPS
 
+# Restore persisted props, format: restore|prop_name|prop_value
+if [ -f "$SPECTER_DIR/persist_backup.txt" ]; then
+  while IFS='|' read -r _pr_cmd _pr_name _pr_val; do
+    [ "$_pr_cmd" = "restore" ] || continue
+    [ -n "$_pr_name" ] || continue
+    resetprop -n -p "$_pr_name" "$_pr_val" 2>/dev/null || true
+    log_d "UNINSTALL" "Restored prop: $_pr_name"
+  done < "$SPECTER_DIR/persist_backup.txt"
+  rm -f "$SPECTER_DIR/persist_backup.txt" 2>/dev/null
+  log_i "UNINSTALL" "All persistent props restored"
+fi
+
+
 # Restore conflict backups, return renamed scripts to their modules
 if [ -f "$SPECTER_DIR/conflict_backups.txt" ]; then
   while IFS= read -r _bak_path; do
@@ -58,13 +62,6 @@ rm -f "$SPECTER_DIR/.first_boot_pending" 2>/dev/null || true
 rm -f "$SPECTER_DIR/vbmeta_digest" "$SPECTER_DIR/app_labels.json" 2>/dev/null || true
 
 rm -rf "$SPECTER_DIR/backup" 2>/dev/null || true
-
-# Clean up scheduler PID
-if [ -f "$SPECTER_DIR/scheduler.pid" ]; then
-  _sched_pid=$(cat "$SPECTER_DIR/scheduler.pid" 2>/dev/null || echo "")
-  [ -n "$_sched_pid" ] && kill "$_sched_pid" 2>/dev/null || true
-  rm -f "$SPECTER_DIR/scheduler.pid"
-fi
 
 # Clean up scheduler task data
 rm -rf "$SPECTER_DIR/scheduler_tasks" 2>/dev/null

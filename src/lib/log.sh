@@ -48,12 +48,16 @@ log_rotate() {
   [ "$_lr_size" -lt "$_lr_max" ] 2>/dev/null && return 0
   if [ "${SPECTER_LOG_LEVEL:-info}" = "debug" ]; then
     _lr_i=$_lr_keep
-    while [ "$_lr_i" -ge 1 ]; do
-      [ -f "${_lr_path}.$((_lr_i - 1)).gz" ] && mv "${_lr_path}.$((_lr_i - 1)).gz" "${_lr_path}.$_lr_i.gz" 2>/dev/null || true
-      [ -f "${_lr_path}.$((_lr_i - 1))" ] && mv "${_lr_path}.$((_lr_i - 1))" "${_lr_path}.$_lr_i" 2>/dev/null || true
+    while [ "$_lr_i" -gt 1 ]; do
+      [ ! -f "${_lr_path}.$((_lr_i - 1)).gz" ] || mv -f "${_lr_path}.$((_lr_i - 1)).gz" "${_lr_path}.$_lr_i.gz"
+      [ ! -f "${_lr_path}.$((_lr_i - 1))" ] || mv -f "${_lr_path}.$((_lr_i - 1))" "${_lr_path}.$_lr_i"
       _lr_i=$((_lr_i - 1))
     done
-    command -v gzip >/dev/null 2>&1 && gzip -f "$_lr_path" 2>/dev/null || true
+    if command -v gzip >/dev/null 2>&1; then
+      gzip -c "$_lr_path" > "${_lr_path}.1.gz" || return 1
+    else
+      cp "$_lr_path" "${_lr_path}.1" || return 1
+    fi
   fi
   : > "$_lr_path"
 }

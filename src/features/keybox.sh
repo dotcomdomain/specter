@@ -4,6 +4,16 @@ MODDIR=${0%/*}
 . "$MODDIR/../lib/common.sh"
 . "$MODDIR/../lib/constants.sh"
 
+# Keep direct WebUI and scheduler failures after the UI is closed. Do not
+# rely on the exit status of tee, which only describes the logging process.
+ensure_dir "$SPECTER_DIR/log"
+_keybox_log="$SPECTER_DIR/log/keybox.log"
+log_rotate "$_keybox_log"
+_keybox_status=$(mktemp "$SPECTER_DIR/log/.keybox_status.XXXXXX")
+trap 'rm -f "$_keybox_status"' EXIT
+printf '1\n' > "$_keybox_status"
+
+_keybox_main() {
 log_d "KEYBOX" "Starting keybox fetch/install"
 
 # --if-needed is used by the action button: keep a healthy installed keybox
@@ -14,10 +24,8 @@ case "${1:-}" in --if-needed) _if_needed=1 ;; esac
 detect_keystore_manager
 ksm_available || die "No keystore manager (Tricky Store / TEESimulator / OhMyKeymint) data directory found"
 
-DECODE_FILE="/data/local/tmp/keybox_decode.$$"
-TEMP_FILE="/data/local/tmp/keybox.tmp.$$"
-trap 'rm -f "$DECODE_FILE" "$TEMP_FILE" 2>/dev/null' EXIT
-
+DECODE_FILE=$(mktemp "${TMPDIR:-/data/local/tmp}/keybox_decode.XXXXXX")
+TEMP_FILE=$(mktemp "${TMPDIR:-/data/local/tmp}/keybox_download.XXXXXX")
 
 _custom_type=$(cat "$CONFIG_DIR/val/keybox_custom_type.val" 2>/dev/null || echo "")
 _custom_value=$(cat "$CONFIG_DIR/val/keybox_custom_value.val" 2>/dev/null || echo "")
@@ -28,10 +36,11 @@ _clear_custom() {
 }
 
 if [ -n "$_custom_type" ] && [ -n "$_custom_value" ]; then
-  log_i "KEYBOX" "Using custom keybox: $_custom_type ($_custom_value)"
+  log_i "KEYBOX" "Using custom keybox: $_custom_type"
   case "$_custom_type" in
     file|path)
       if [ -f "$_custom_value" ]; then
+        keybox_validate "$_custom_value" || die "Invalid custom keybox XML (existing keybox kept)"
         ksm_install_keybox "$_custom_value" copy || die "Failed to copy custom keybox"
         log_i "KEYBOX" "Custom keybox installed from $_custom_value"
         _clear_custom
@@ -42,29 +51,27 @@ if [ -n "$_custom_type" ] && [ -n "$_custom_value" ]; then
       exit 1
       ;;
     url)
-      check_network || { log_e "KEYBOX" "No internet connection"; _clear_custom; exit 1; }
       log_i "KEYBOX" "Downloading custom keybox from URL..."
-download "$_custom_value" "$TEMP_FILE" || {
-  log_e "KEYBOX" "Custom URL download failed"
-  _clear_custom
-  exit 1
-}
-if decode_keybox_blob "$TEMP_FILE" "$DECODE_FILE" 2>/dev/null && [ -s "$DECODE_FILE" ]; then
-        ksm_install_keybox "$DECODE_FILE" || die "Failed to move decoded keybox"
-        log_i "KEYBOX" "Custom keybox installed from URL"
-        _clear_custom
-        exit 0
+      download "$_custom_value" "$TEMP_FILE" || die "Custom URL download failed (existing keybox kept)"
+      if keybox_validate "$TEMP_FILE"; then
+        cp "$TEMP_FILE" "$DECODE_FILE"
+      elif ! decode_keybox_blob "$TEMP_FILE" "$DECODE_FILE" 2>/dev/null; then
+        die "Custom keybox is neither XML nor a valid encoded blob"
       fi
-      log_e "KEYBOX" "Custom keybox decode failed, not a valid base64 blob"
+      keybox_validate "$DECODE_FILE" || die "Invalid custom keybox XML (existing keybox kept)"
+      ksm_install_keybox "$DECODE_FILE" || die "Failed to move decoded keybox"
+      log_i "KEYBOX" "Custom keybox installed from URL"
       _clear_custom
-      exit 1
+      exit 0
       ;;
+    *) die "Unknown custom keybox type: $_custom_type" ;;
   esac
 fi
 
 if [ "$_if_needed" = "1" ]; then
   _ki_info="${SPECTER_KEYBOX_INFO:-$MODDIR/../webroot/json/keybox_info.json}"
-  if [ -f "$KSM_KEYBOX" ] && [ -f "$_ki_info" ] && [ "$_ki_info" -nt "$KSM_KEYBOX" ] &&
+  if keybox_info_is_fresh "$_ki_info" "$KSM_KEYBOX" &&
+     grep -q '"revocation_checked": true' "$_ki_info" &&
      grep -q '"installed": true' "$_ki_info" &&
      ! grep -q '"revoked": true' "$_ki_info" &&
      ! grep -q '"softbanned": true' "$_ki_info"; then
@@ -95,7 +102,6 @@ _try_keybox_url() {
 
   if [ -z "$_has_ecdsa" ] && [ -z "$_has_rsa" ]; then
     log_w "KEYBOX" "No ECDSA key, no RSA key in decoded file"
-    log_d "KEYBOX" "First 100 bytes: $(head -c 100 "$DECODE_FILE" 2>/dev/null | tr '\n' ' ' | tr '\0' '.')"
     log_e "KEYBOX" "No valid attestation keys found in downloaded keybox"
     return 1
   fi
@@ -103,16 +109,24 @@ _try_keybox_url() {
   [ -n "$_has_ecdsa" ] || log_w "KEYBOX" "Missing ECDSA key block"
   [ -n "$_has_rsa" ] || log_w "KEYBOX" "Missing RSA key block"
 
+  keybox_validate "$DECODE_FILE" || { log_e "KEYBOX" "Invalid keybox XML"; return 1; }
   _serial=$(decode_keybox_serial "$DECODE_FILE" 2>/dev/null || echo "")
   if [ -n "$_serial" ]; then
     log_i "KEYBOX" "Checking Google revocation for serial $_serial"
     if check_google_revocation "$_serial"; then
       log_w "KEYBOX" "Keybox is revoked by Google"
       return 1
+    else
+      _revocation_rc=$?
+      if [ "$_revocation_rc" -eq 2 ]; then
+        log_e "KEYBOX" "Could not verify Google revocation status; existing keybox kept"
+        return 1
+      fi
     fi
     log_i "KEYBOX" "Keybox is not revoked"
   else
-    log_w "KEYBOX" "Could not extract serial for revocation check"
+    log_e "KEYBOX" "Could not extract serial for revocation check"
+    return 1
   fi
 
   ksm_install_keybox "$DECODE_FILE" || die "Failed to move decoded keybox to $KSM_KEYBOX"
@@ -122,9 +136,9 @@ _try_keybox_url() {
   exit 0
 }
 
-check_network || { log_e "KEYBOX" "No internet connection"; exit 1; }
-
-_provider=$(cat "$CONFIG_DIR/val/keybox_provider.val" 2>/dev/null || echo "auto")
+# Try the actual provider endpoint; blocked ping/Google probes do not mean
+# the provider is unreachable.
+_provider=$(cfg_get keybox_provider auto)
 
 log_i "KEYBOX" "Fetching available keyboxes..."
 _history=$(keybox_catalog || true)
@@ -138,10 +152,18 @@ if [ -z "$_history" ]; then
   die "No working keybox available (all revoked?)"
 fi
 
+# Saved providers can disappear from the catalog. Recover explicitly instead
+# of leaving every subsequent action stuck on the removed provider.
+if [ "$_provider" != "auto" ] && ! printf '%s' "$_history" | keybox_entries | grep -Fq '"source":"'"$_provider"'"'; then
+  log_w "KEYBOX" "Provider '$_provider' is no longer available; switching to Auto"
+  _provider=auto
+  cfg_set keybox_provider auto
+fi
+
 if [ "$_provider" = "auto" ]; then
-  _objs=$(printf '%s' "$_history" | grep -o '"entries":\[[^]]*\]' | grep -o '{[^}]*}' | grep -v '"revoked":true' || true)
+  _objs=$(printf '%s' "$_history" | keybox_entries | grep -v '"revoked":true' || true)
 else
-  _objs=$(printf '%s' "$_history" | grep -o '"entries":\[[^]]*\]' | grep -o '{[^}]*"source":"'"$_provider"'"[^}]*}' | grep -v '"revoked":true' || true)
+  _objs=$(printf '%s' "$_history" | keybox_entries | grep -F '"source":"'"$_provider"'"' | grep -v '"revoked":true' || true)
 fi
 _pool=$(printf '%s\n' "$_objs" | keybox_prefer_active "$_history")
 if [ "$_provider" != "auto" ]; then
@@ -154,14 +176,14 @@ if [ "$_provider" != "auto" ]; then
   done <<EOF
 $_pool
 EOF
-  _pool=$(printf '%s\n' "$_sorted" | sort -rn | sed 's/^[^ ]* //')
+  _pool=$(printf '%s\n' "$_sorted" | sort -rV | sed 's/^[^ ]* //')
 fi
 _count=$(printf '%s\n' "$_pool" | grep -c '"source":' || true)
-[ "${_count:-0}" -gt 0 ] || die "No working keybox available (all revoked?)"
+[ "${_count:-0}" -gt 0 ] || die "No non-revoked keyboxes available for provider '$_provider'"
 
 _start=0
 if [ "$_provider" = "auto" ] && [ "$_count" -gt 1 ]; then
-  _rand_hex=$(hexdump -n 4 -e '4/4 "%08X"' /dev/urandom 2>/dev/null) && _start=$(( 0x${_rand_hex} % _count )) || _start=$(( $$ % _count ))
+  _start=$(keybox_random_start "$_count")
 fi
 
 _n=0
@@ -184,3 +206,17 @@ while [ "$_n" -lt "$_count" ]; do
 done
 
 die "No working keybox available (all revoked?)"
+
+}
+
+_keybox_cleanup() {
+  _kb_rc=$?
+  rm -f "$DECODE_FILE" "$TEMP_FILE"
+  printf '%s\n' "$_kb_rc" > "$_keybox_status"
+}
+(
+  trap '_keybox_cleanup' EXIT
+  _keybox_main "$@"
+) 2>&1 | tee -a "$_keybox_log"
+_keybox_rc=$(cat "$_keybox_status")
+exit "$_keybox_rc"

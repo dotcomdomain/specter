@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi, afterEach } from 'vitest'
-import { initBridge, exec, runScript, getModuleDir, getDataDir } from './bridge.js'
+import { initBridge, exec, runScript, getModuleDir, getDataDir, spawnScript } from './bridge.js'
 import type { KsuBridge } from './types.js'
 
 function mockKsu(overrides?: Partial<KsuBridge>) {
@@ -148,7 +148,7 @@ describe('runScript', () => {
     await initBridge()
     const result = await runScript('fail.sh')
     expect(result.success).toBe(false)
-    expect(result.output).toBe('fail output')
+    expect(result.output).toBe('fail output\nstderr here')
   })
 
   it('rejects on JSON script error', async () => {
@@ -165,3 +165,26 @@ describe('runScript', () => {
 })
 
 
+
+
+describe('bridge failure reporting', () => {
+  it('rejects JSON responses with a nonzero code even without a success flag', async () => {
+    mockKsu({ exec(_cmd, _opts, name) { (window as any)[name](JSON.stringify({ code: 7, stderr: 'fetch failed' })); } });
+    mockFetchJson({ MODDIR: '/data/adb/modules/specter' });
+    await initBridge();
+    await expect(runScript('keybox.sh')).rejects.toThrow('Script execution failed');
+  });
+
+  it('notifies streaming consumers when a native spawn times out', async () => {
+    const ksu = mockKsu();
+    mockFetchJson({ MODDIR: '/data/adb/modules/specter' });
+    await initBridge();
+    const child = spawnScript('keybox.sh');
+    const onError = vi.fn();
+    child.on('error', onError);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'Operation timed out' }));
+    const name = vi.mocked(ksu.spawn!).mock.calls[0]![3];
+    expect((window as any)[name]).toBeUndefined();
+  });
+});

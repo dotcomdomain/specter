@@ -89,4 +89,21 @@ _ui="$(cat "$UI_LOG")"
 assert_contains "fail: warns" "$_ui" "WARNING: live-apply failed"
 assert_not_contains "fail: no no-reboot promise" "$_ui" "No need to reboot"
 
+# ---- stage activation fails: the installed module must survive ----
+bootstrap
+source_libs
+_hi_setup
+unset _specter_hot_done
+mv() {
+  if [ "$1" = "$STAGE" ]; then return 1; fi
+  command mv "$@"
+}
+specter_hot_install
+_rc=$?
+unset -f mv
+assert_exit_code "rename failure: reported" 1 "$_rc"
+assert_contains "rename failure: old module restored" "$(cat "$LIVE/module.prop")" OldVersion
+assert_file_exists "rename failure: stage retained" "$STAGE/module.prop"
+assert_eq "rename failure: no success flag" "" "${_specter_hot_done:-}"
+
 done_testing

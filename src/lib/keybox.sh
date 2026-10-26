@@ -3,12 +3,39 @@
 
 decode_keybox_blob() {
   _dkb_in="$1" _dkb_out="$2"
-  _dkb_tmp="/data/local/tmp/_dkb_$$.tmp"
+  _dkb_tmp=$(mktemp "${TMPDIR:-/data/local/tmp}/_dkb.XXXXXX") || return 1
   decode_substitution "$_dkb_in" "$_dkb_tmp" 2>/dev/null || { rm -f "$_dkb_tmp"; return 1; }
   base64 -d < "$_dkb_tmp" > "$_dkb_out" 2>/dev/null || { rm -f "$_dkb_tmp"; return 1; }
   rm -f "$_dkb_tmp"
   unset _dkb_in _dkb_out _dkb_tmp
 }
+
+# A basic structural check shared by local XML, XML URLs and encoded blobs.
+# Do not log key material when validation fails.
+keybox_validate() {
+  [ -s "$1" ] &&
+    grep -Eq '<Key[[:space:]]+algorithm="(ecdsa|rsa)"' "$1" &&
+    grep -Eq 'DeviceID[[:space:]]*=|<serial>' "$1" &&
+    grep -q -- '-----BEGIN .*PRIVATE KEY-----' "$1" &&
+    grep -q -- '-----BEGIN CERTIFICATE-----' "$1"
+}
+
+# Metadata must be newer than the keybox AND recent in wall-clock time.
+# Otherwise an installed keybox could be considered healthy indefinitely.
+keybox_info_is_fresh() (
+  [ -f "$1" ] && [ -f "$2" ] && [ "$1" -nt "$2" ] || return 1
+  _kif_age=$(( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || echo 0) ))
+  [ "$_kif_age" -ge 0 ] && [ "$_kif_age" -lt "${KEYBOX_INFO_TTL:-3600}" ]
+)
+
+# Android mksh arithmetic is signed 32-bit. Mask the sign bit before modulo.
+keybox_random_start() (
+  _krs_hex=$(hexdump -n 4 -e '4/4 "%08X"' /dev/urandom 2>/dev/null) || _krs_hex=""
+  case "$_krs_hex" in
+    ""|*[!0-9a-fA-F]*) printf '%s\n' "$(( $$ % $1 ))" ;;
+    *) printf '%s\n' "$(( (0x$_krs_hex & 0x7fffffff) % $1 ))" ;;
+  esac
+)
 
 # shellcheck disable=SC3057,SC3052
 _parse_serial() {
@@ -95,8 +122,8 @@ keybox_catalog() {
       return 0
     fi
   fi
-  _kc_json=$(download "$CATALOG_URL" 2>/dev/null) || _kc_json=""
-  if [ -n "$_kc_json" ]; then
+  _kc_json=$(download "$CATALOG_URL") || _kc_json=""
+  if printf '%s' "$_kc_json" | grep -q '"entries":[[:space:]]*\['; then
     ensure_dir "$SPECTER_DIR/cache"
     printf '%s' "$_kc_json" > "$_kc_cache" 2>/dev/null || true
     printf '%s' "$_kc_json"
@@ -119,23 +146,25 @@ check_google_revocation() {
     fi
   fi
   if [ -z "$_gr_file" ]; then
-    _gr_resp=$(download "$GOOGLE_REVOCATION_URL" 2>/dev/null) || _gr_resp=""
-    if [ -n "$_gr_resp" ]; then
-      ensure_dir "$SPECTER_DIR/cache"
-      cat > "$_gr_cache" <<EOF
-$_gr_resp
-EOF
+    ensure_dir "$SPECTER_DIR/cache"
+    _gr_tmp=$(mktemp "${_gr_cache}.XXXXXX") || return 2
+    # CRLs exceed Android MAX_ARG_STRLEN. Stream to disk instead of expanding
+    # the entire JSON into printf/grep arguments or environment variables.
+    if download "$GOOGLE_REVOCATION_URL" > "$_gr_tmp" && grep -q '"entries":[[:space:]]*{' "$_gr_tmp"; then
+      mv -f "$_gr_tmp" "$_gr_cache" || { rm -f "$_gr_tmp"; return 2; }
       _gr_file="$_gr_cache"
+    else
+      rm -f "$_gr_tmp"
     fi
   fi
-  if [ -z "$_gr_file" ] || ! grep -q '"entries"' "$_gr_file"; then
-    unset _gr_serial _gr_cache _gr_ttl _gr_file _gr_resp _gr_age
-    return 1
+  if [ -z "$_gr_file" ] || ! grep -q '"entries":[[:space:]]*{' "$_gr_file"; then
+    unset _gr_serial _gr_cache _gr_ttl _gr_file _gr_tmp _gr_age
+    return 2
   fi
-  _gr_dec=$(hex_to_dec "$_gr_serial")
+  _gr_dec=$(hex_to_dec "$_gr_serial") || return 2
   _gr_rc=1
   grep -Fq "\"$_gr_dec\"" "$_gr_file" && _gr_rc=0
-  unset _gr_serial _gr_cache _gr_ttl _gr_file _gr_resp _gr_age _gr_dec
+  unset _gr_serial _gr_cache _gr_ttl _gr_file _gr_tmp _gr_age _gr_dec
   return $_gr_rc
 }
 
@@ -152,15 +181,47 @@ find_kmInstallKeybox() {
   unset _fk_abi _fk_lib_dir _fk_bin _fk_dir
 }
 
+# Emit entries as compact objects. Track strings/escapes rather than stopping
+# at a ']' or '}' that happens to occur inside a provider name or display text.
+keybox_entries() {
+  awk '
+    { json = json $0 "\n" }
+    END {
+      if (!match(json, /"entries"[[:space:]]*:[[:space:]]*\[/)) exit
+      json = substr(json, RSTART + RLENGTH)
+      quoted = escaped = depth = 0
+      obj = ""
+      for (i = 1; i <= length(json); i++) {
+        c = substr(json, i, 1)
+        if (quoted) {
+          if (depth) obj = obj c
+          if (escaped) escaped = 0
+          else if (c == "\\") escaped = 1
+          else if (c == "\"") quoted = 0
+          continue
+        }
+        if (c == "\"") quoted = 1
+        if (c == "]" && !depth) break
+        if (c == "{") depth++
+        if (depth && c !~ /[[:space:]]/) obj = obj c
+        if (c == "}") {
+          depth--
+          if (!depth) { print obj; obj = "" }
+        }
+      }
+    }
+  '
+}
+
 # True if catalog entry for SOURCE/VERSION is softbanned.
 keybox_is_softbanned() {
-  echo "$1" | grep -o '"entries":\[[^]]*\]' | grep -o '{[^}]*"source":"'"$2"'"[^}]*"version":"'"$3"'"[^}]*}' | head -1 | grep -q '"softbanned":true'
+  printf '%s' "$1" | keybox_entries | grep -F '"source":"'"$2"'"' | grep -F '"version":"'"$3"'"' | head -1 | grep -q '"softbanned":true'
 }
 
 # Prefer active (non-softbanned) candidates. stdin: one JSON object per line
 # with source/version. $1 = full catalog JSON. stdout: preferred pool.
 keybox_prefer_active() {
-  _kpa_hist="$1"
+  _kpa_hist=$(printf '%s' "$1" | keybox_entries)
   KEYBOX_CATALOG="$_kpa_hist" awk '
     function field(obj, key,   r) {
       if (!match(obj, "\"" key "\":\"[^\"]*\"")) return ""
@@ -171,14 +232,9 @@ keybox_prefer_active() {
     }
     BEGIN {
       hist = ENVIRON["KEYBOX_CATALOG"]
-      if (match(hist, /"entries":\[[^]]*\]/)) {
-        hist = substr(hist, RSTART, RLENGTH)
-      } else {
-        hist = ""
-      }
-      while (match(hist, /\{[^{}]*\}/)) {
-        obj = substr(hist, RSTART, RLENGTH)
-        hist = substr(hist, RSTART + RLENGTH)
+      n = split(hist, objects, "\n")
+      for (k = 1; k <= n; k++) {
+        obj = objects[k]
         src = field(obj, "source")
         ver = field(obj, "version")
         if (src != "" && ver != "") {
@@ -207,9 +263,9 @@ keybox_prefer_active() {
 keybox_latest_for_provider() {
   _klp_hist="$1"
   _klp_prov="$2"
-  _klp_entries=$(echo "$_klp_hist" | grep -o '"entries":\[[^]]*\]' | grep -o '{[^}]*"source":"'"$_klp_prov"'"[^}]*}' | grep -v '"revoked":true')
-  _klp_ver=$(printf '%s\n' "$_klp_entries" | grep -v '"softbanned":true' | sed 's/.*"version":"\([^"]*\)".*/\1/' | sort -rn | head -1)
-  [ -z "$_klp_ver" ] && _klp_ver=$(printf '%s\n' "$_klp_entries" | grep '"softbanned":true' | sed 's/.*"version":"\([^"]*\)".*/\1/' | sort -rn | head -1)
+  _klp_entries=$(printf '%s' "$_klp_hist" | keybox_entries | grep -F '"source":"'"$_klp_prov"'"' | grep -v '"revoked":true')
+  _klp_ver=$(printf '%s\n' "$_klp_entries" | grep -v '"softbanned":true' | sed 's/.*"version":"\([^"]*\)".*/\1/' | sort -rV | head -1)
+  [ -z "$_klp_ver" ] && _klp_ver=$(printf '%s\n' "$_klp_entries" | grep '"softbanned":true' | sed 's/.*"version":"\([^"]*\)".*/\1/' | sort -rV | head -1)
   echo "$_klp_ver"
   unset _klp_hist _klp_prov _klp_entries _klp_ver
 }

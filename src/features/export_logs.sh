@@ -3,9 +3,9 @@ set -e
 MODDIR=${0%/*}
 . "$MODDIR/../lib/common.sh"
 
-OUTPUT_DIR="/sdcard/Download"
+OUTPUT_DIR="${SPECTER_EXPORT_DIR:-/sdcard/Download}"
 OUTPUT_FILE="$OUTPUT_DIR/specter_logs.txt"
-SANITIZE="${1:-no}"
+SANITIZE="${1:-sanitize}"
 
 log_i "EXPORT" "Starting log export (sanitize=$SANITIZE)"
 
@@ -16,7 +16,8 @@ log_i "EXPORT" "Output: $OUTPUT_FILE"
 
 _sanitize_stream() {
   if [ "$SANITIZE" = "sanitize" ]; then
-    sed -e 's/[0-9a-fA-F]\{32,\}/[REDACTED_HEX]/g' \
+    sed -e '/-----BEGIN .*PRIVATE KEY-----/,/-----END .*PRIVATE KEY-----/c\[REDACTED_PRIVATE_KEY]' \
+        -e 's/[0-9a-fA-F]\{32,\}/[REDACTED_HEX]/g' \
         -e 's/[0-9a-fA-F]\{16,\}/[REDACTED_HEX]/g'
   else
     cat
@@ -63,6 +64,9 @@ for _cfg_file in "$SPECTER_DIR"/config/val/*.val; do
   [ -f "$_cfg_file" ] || continue
   _cfg_name=$(basename "$_cfg_file" .val)
   _cfg_val=$(cat "$_cfg_file" 2>/dev/null || echo "")
+  if [ "$SANITIZE" = "sanitize" ] && [ "$_cfg_name" = "keybox_custom_value" ]; then
+    _cfg_val="[REDACTED]"
+  fi
   echo "$_cfg_name=$_cfg_val" >> "$OUTPUT_FILE"
 done 2>/dev/null || true
 echo "" >> "$OUTPUT_FILE"

@@ -108,4 +108,9 @@ describe('keybox display format', () => {
     expect(byEl.style.display).toBe('none')
     expect(sourceEl.style.display).toBe('none')
   })
+  it('does not display Active when revocation could not be checked', () => {
+    applyKeyboxStatus({ installed: true, revoked: false, revocation_checked: false });
+    expect(document.getElementById('keybox-status')!.textContent).toBe('Offline');
+  });
+
 })

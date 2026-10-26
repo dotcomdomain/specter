@@ -1,8 +1,9 @@
 import { getModuleDir, exec } from './bridge.js';
-import { cfgGet, cfgSet } from './cfg.js';
+import { cfgGet, cfgSet, cfgFlush } from './cfg.js';
 import { getTranslation } from './i18n.js';
-import { shellEscape, fetchJson } from './utils.js';
+import { shellEscape, fetchJson, escapeHtml } from './utils.js';
 import { showToast } from './toast.js';
+import { showErrorDialog } from './dialog.js';
 import { openFileBrowser } from './file-browser.js';
 import { refreshKeyboxStatus } from './device.js';
 import { API_URLS } from './constants.js';
@@ -29,11 +30,13 @@ const providerSelects = new WeakSet<HTMLSelectElement>();
 async function fetchCatalog(): Promise<CatalogJson | null> {
   const url = API_URLS.KEY_CATALOG!;
   const data = await fetchJson<CatalogJson>(url, 300000).catch(() => null);
-  if (data?.entries) return data;
+  if (Array.isArray(data?.entries)) return data;
   if (typeof exec !== 'function') return null;
   try {
     const res = await exec(`curl -sfL --connect-timeout 10 ${shellEscape(url)}`);
-    return JSON.parse(res.stdout) as CatalogJson;
+    if (res.code !== 0) return null;
+    const parsed = JSON.parse(res.stdout) as CatalogJson;
+    return Array.isArray(parsed?.entries) ? parsed : null;
   } catch {
     return null;
   }
@@ -51,9 +54,11 @@ export async function populateProviders() {
   const data = await fetchCatalog();
   if (data?.entries) {
     const sources = [...new Set(data.entries.map(e => e.source))].sort();
-    const currentValue = select.value;
+    const currentValue = await cfgGet('keybox_provider', 'auto') || 'auto';
     renderProviderOptions(select, sources);
-    select.value = currentValue;
+    const selected = sources.includes(currentValue) ? currentValue : 'auto';
+    select.value = selected;
+    if (selected !== currentValue) cfgSet('keybox_provider', selected);
   }
 }
 
@@ -77,9 +82,12 @@ export function wireKeyboxInstallButton() {
     spinner?.classList.remove('hidden');
 
     try {
+      const select = document.getElementById('kb-provider') as HTMLSelectElement | null;
+      if (select?.value) cfgSet('keybox_provider', select.value);
       cfgSet('keybox_custom_type', '');
       cfgSet('keybox_custom_value', '');
-      await runAction('keybox.sh');
+      await cfgFlush();
+      if (!await runAction('keybox.sh')) return;
       const moddir = getModuleDir();
       if (moddir) {
         await exec(`sh ${shellEscape(moddir + '/features/keybox_info.sh')}`).catch(() => {});
@@ -87,7 +95,7 @@ export function wireKeyboxInstallButton() {
       }
       await refreshKeyboxStatus();
     } catch (_e) {
-      console.warn('Install error:', _e);
+      showErrorDialog(t('error_dialog_title', 'Error Details'), String(_e));
     } finally {
       btn.disabled = false;
       spinner?.classList.add('hidden');
@@ -157,7 +165,7 @@ export async function openCustomKeyboxDialog() {
                   <div class="list-item-content">
                     <div class="toggle-text">${t('custom_kb_file', 'Import File')}</div>
                     <span class="supporting-text" id="kb-file-subtitle" style="${selectedFilePath ? 'color: var(--md-sys-color-primary); font-weight: 500;' : ''}">
-                      ${selectedFilePath ? selectedFilePath.split('/').pop() : t('custom_kb_file_desc', 'Select a keybox XML file from your device')}
+                      ${escapeHtml(selectedFilePath ? selectedFilePath.split('/').pop() || '' : t('custom_kb_file_desc', 'Select a keybox XML file from your device'))}
                     </span>
                   </div>
                   <div class="spacer"></div>
@@ -210,7 +218,7 @@ export async function openCustomKeyboxDialog() {
                       id="kb-url-input"
                       class="subpage-full-input"
                       placeholder="${t('kb_url_placeholder', 'https://example.com/keybox.xml or /sdcard/keybox.xml')}"
-                      value="${selectedFilePath}"
+                      value="${escapeHtml(selectedFilePath)}"
                       aria-label="${t('custom_kb_url', 'URL or Path')}"
                     />
                     <md-icon-button id="kb-paste-btn" aria-label="${t('kb_paste_aria', 'Paste from clipboard')}">
@@ -289,9 +297,9 @@ export async function openCustomKeyboxDialog() {
           }
           cfgSet('keybox_custom_value', text);
 
+          await cfgFlush();
           const moddir = getModuleDir();
-          const result: any = await exec(`sh ${shellEscape(moddir + '/features/keybox.sh')}`);
-          if (result.code === 0) {
+          if (await runAction('keybox.sh')) {
             showToast(t('custom_kb_installed', 'Custom keybox installed'), { icon: 'check_circle', type: 'success', autoCloseDelay: 3000 });
             await exec(`sh ${shellEscape(moddir + '/features/keybox_info.sh')}`).catch(() => {});
             await exec(`sh ${shellEscape(moddir + '/refresh_desc.sh')}`).catch(() => {});
@@ -300,6 +308,8 @@ export async function openCustomKeyboxDialog() {
           } else {
             showToast(t('custom_kb_install_failed', 'Install failed'), { icon: 'error', type: 'error', autoCloseDelay: 5000 });
           }
+        } catch (error) {
+          showErrorDialog(t('error_dialog_title', 'Error Details'), String(error));
         } finally {
           applyBtn.disabled = false;
         }

@@ -70,7 +70,7 @@ mk_module tricky_store "Tricky Store"
 detect_keystore_manager
 printf '<keybox/>\n' > "$KSM_KEYBOX"
 _ki_info="$TEST_ROOT/keybox_info.json"
-printf '{\n  "installed": true,\n  "source": "TAKR",\n  "source_version": "32",\n  "revoked": false,\n  "softbanned": false\n}\n' > "$_ki_info"
+printf '{\n  "installed": true,\n  "source": "TAKR",\n  "source_version": "32",\n  "revocation_checked": true,\n  "revoked": false,\n  "softbanned": false\n}\n' > "$_ki_info"
 sleep 1
 touch "$_ki_info"
 export SPECTER_KEYBOX_INFO="$_ki_info"

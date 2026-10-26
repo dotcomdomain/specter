@@ -92,7 +92,7 @@ export async function openRecentActivity(devMode = false) {
 
   for (const entry of entries) {
     const friendlyName = entry.script === 'action.sh' ? 'Action' : (t(getFriendlyNames()[entry.script] ?? '', '') || entry.script);
-    const isError = entry.output.includes('[!]') || entry.output.toLowerCase().includes('error');
+    const isError = entry.code !== undefined ? entry.code !== 0 : entry.output.includes('[!]') || entry.output.toLowerCase().includes('error');
     const card = document.createElement('md-elevated-card');
     card.className = 'activity-card' + (isError ? ' activity-card--error' : ' activity-card--success');
     card.innerHTML = `<div class="activity-card__header">

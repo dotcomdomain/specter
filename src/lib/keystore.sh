@@ -466,27 +466,27 @@ ksm_install_keybox() {
       }
       [ "$_kik_mode" = "copy" ] || rm -f "$_kik_src"
       ;;
-    teesim)
-      mkdir -p "$TEESIM_DIR" 2>/dev/null
-      if [ "$_kik_mode" = "copy" ]; then
-        cp "$_kik_src" "$KSM_KEYBOX" || { unset _kik_src _kik_mode; return 1; }
-      else
-        mv "$_kik_src" "$KSM_KEYBOX" || { unset _kik_src _kik_mode; return 1; }
-      fi
-      _teesim_ensure_keybox_field "$TEESIM_CONFIG" || {
-        unset _kik_src _kik_mode
-        return 1
-      }
-      ;;
     *)
-      mkdir -p "$(dirname "$KSM_KEYBOX")" 2>/dev/null
-      if [ "$_kik_mode" = "copy" ]; then
-        cp "$_kik_src" "$KSM_KEYBOX" || { unset _kik_src _kik_mode; return 1; }
-      else
-        mv "$_kik_src" "$KSM_KEYBOX" || { unset _kik_src _kik_mode; return 1; }
+      mkdir -p "$(dirname "$KSM_KEYBOX")" 2>/dev/null || return 1
+      _kik_tmp=$(mktemp "${KSM_KEYBOX}.XXXXXX") || return 1
+      if ! cp "$_kik_src" "$_kik_tmp"; then
+        rm -f "$_kik_tmp"
+        unset _kik_src _kik_mode _kik_tmp
+        return 1
       fi
+      if [ "$KSM" = "teesim" ] && ! _teesim_ensure_keybox_field "$TEESIM_CONFIG"; then
+        rm -f "$_kik_tmp"
+        unset _kik_src _kik_mode _kik_tmp
+        return 1
+      fi
+      if ! mv -f "$_kik_tmp" "$KSM_KEYBOX"; then
+        rm -f "$_kik_tmp"
+        unset _kik_src _kik_mode _kik_tmp
+        return 1
+      fi
+      [ "$_kik_mode" = "copy" ] || [ "$_kik_src" = "$KSM_KEYBOX" ] || rm -f "$_kik_src"
       ;;
   esac
-  unset _kik_src _kik_mode
+  unset _kik_src _kik_mode _kik_tmp
 }
 

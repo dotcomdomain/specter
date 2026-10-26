@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest'
-import { cfgGet, cfgSet, cfgInvalidate, setDataDir, migrateLocalStorage } from './cfg.js'
+import { cfgGet, cfgSet, cfgInvalidate, setDataDir, migrateLocalStorage, cfgInit } from './cfg.js'
 
 vi.mock('./bridge.js', () => ({
   exec: vi.fn(() => Promise.resolve({ stdout: '', stderr: '', code: 0 })),
@@ -68,3 +68,48 @@ describe('cfg (caching layer)', () => {
     expect(await cfgGet('lang')).toBe('en')
   })
 })
+
+// These exercise ordering at the bridge boundary rather than the cache alone.
+describe('configuration persistence', () => {
+  it('serializes overlapping writes and flushes the latest selection', async () => {
+    const { exec } = await import('./bridge.js');
+    const { cfgFlush } = await import('./cfg.js');
+    let finish!: (value: any) => void;
+    vi.mocked(exec).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const first = cfgSet('provider', 'old');
+    const second = cfgSet('provider', 'new');
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(exec).toHaveBeenCalledTimes(1);
+    let flushed = false;
+    const flush = cfgFlush().then(() => { flushed = true; });
+    expect(flushed).toBe(false);
+    finish({ code: 0, stdout: '', stderr: '' });
+    await Promise.all([first, second, flush]);
+    expect(exec).toHaveBeenLastCalledWith(expect.stringContaining("printf '%s' 'new'"));
+  });
+
+  it('reports nonzero bridge exits and allows a successful retry', async () => {
+    const { exec } = await import('./bridge.js');
+    const { cfgFlush } = await import('./cfg.js');
+    vi.mocked(exec).mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'Permission denied' });
+    expect(await cfgSet('provider', 'TAKR')).toBe(false);
+    await expect(cfgFlush()).rejects.toThrow('provider');
+    await cfgSet('provider', 'TAKR');
+    await expect(cfgFlush()).resolves.toBeUndefined();
+  });
+});
+
+
+describe('disk configuration is authoritative', () => {
+  it('refreshes preloaded localStorage values from the backend, including empty values', async () => {
+    const { exec } = await import('./bridge.js');
+    (window as any).__preloadedCfg = { keybox_provider: 'KOW', keybox_custom_value: 'old.xml' };
+    localStorage.setItem('sp_cfg_keybox_provider', 'KOW');
+    vi.mocked(exec).mockResolvedValueOnce({ code: 0, stdout: 'CFG:keybox_provider\nauto\nCFG:keybox_custom_value\n\n', stderr: '' });
+    await cfgInit();
+    expect(await cfgGet('keybox_provider')).toBe('auto');
+    expect(await cfgGet('keybox_custom_value')).toBe('');
+    expect(localStorage.getItem('sp_cfg_keybox_provider')).toBe('auto');
+    delete (window as any).__preloadedCfg;
+  });
+});

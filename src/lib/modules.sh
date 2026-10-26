@@ -93,3 +93,21 @@ install_module_from_github() {
   unset _mg_repo _mg_name _mg_json _mg_urls _mg_dl_url _mg_debug_url _mg_url _mg_tmp _mg_rc _mg_old_ifs
   return $_mg_rc_final
 }
+
+# Stop only a live scheduler belonging to this module, including its watchers.
+stop_specter_scheduler() (
+  _sss_pid_file="$SPECTER_DIR/scheduler.pid"
+  _sss_pid=$(cat "$_sss_pid_file" 2>/dev/null) || return 0
+  case "$_sss_pid" in ''|*[!0-9]*|0|1) rm -f "$_sss_pid_file"; return 0 ;; esac
+  _sss_cmd=$(tr '\0' ' ' < "/proc/$_sss_pid/cmdline" 2>/dev/null) || _sss_cmd=""
+  case "$_sss_cmd" in
+    *"$MODDIR/lib/scheduler.sh"*)
+      for _sss_child in $(pgrep -P "$_sss_pid" 2>/dev/null); do
+        case "$_sss_child" in ''|*[!0-9]*|0|1) continue ;; esac
+        kill "$_sss_child" 2>/dev/null || true
+      done
+      kill "$_sss_pid" 2>/dev/null || true
+      ;;
+  esac
+  rm -f "$_sss_pid_file"
+)

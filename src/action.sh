@@ -11,6 +11,22 @@ ACTION_LOG="$SPECTER_DIR/log/action.log"
 ensure_dir "$SPECTER_DIR/log" 2>/dev/null
 log_rotate "$ACTION_LOG"
 
+# Pipeline commands run in a subshell when piped to tee. Carry the actual
+# feature status back explicitly instead of reporting tee's successful exit.
+_action_status=$(mktemp "$SPECTER_DIR/log/.action_status.XXXXXX")
+trap 'rm -f "$_action_status"' EXIT
+printf '1\n' > "$_action_status"
+_action_code=0
+_action_feature() {
+  if "$@"; then
+    return 0
+  else
+    _action_feature_rc=$?
+    _action_code=1
+    log_e "ACTION" "Feature failed (exit $_action_feature_rc): $*"
+  fi
+}
+
 _pif_validate_fingerprint() {
   for _f in "$SPECTER_DIR/pif.prop" "$PIF_DIR/custom.pif.prop" /data/adb/pif.prop "$PIF_DIR/pif.prop" "$PIF_DIR/custom.pif.json" "$PIF_DIR/pif.json"; do
     [ -f "$_f" ] || continue
@@ -42,7 +58,7 @@ _force_hma=$(cfg_get toggle_action_force_hma 0)
     if [ "$_first_boot" = "1" ]; then
       log_i "ACTION" "First boot, skipping Play Store data clear"
     else
-      sh "$MODDIR/features/kill_play_store.sh" || true
+      _action_feature sh "$MODDIR/features/kill_play_store.sh"
     fi
   }
 
@@ -50,7 +66,7 @@ _force_hma=$(cfg_get toggle_action_force_hma 0)
     log_u "ACTION" ""
     log_u "ACTION" "-> App Targeting:"
     if [ "$_first_boot" = "1" ] || [ "$_force_target" = "1" ] || [ "$(cfg_get toggle_auto_target 1)" != "1" ]; then
-      sh "$MODDIR/features/target.sh" --merge || true
+      _action_feature sh "$MODDIR/features/target.sh" --merge
     else
       log_i "ACTION" "Auto-targeting is enabled, skipping target generation"
     fi
@@ -59,13 +75,13 @@ _force_hma=$(cfg_get toggle_action_force_hma 0)
   _feature_should_run "security_patch" && {
     log_u "ACTION" ""
     log_u "ACTION" "-> Security Patch:"
-    SPECTER_FIRST_BOOT=$_first_boot sh "$MODDIR/features/security_patch.sh" || true
+    SPECTER_FIRST_BOOT=$_first_boot _action_feature sh "$MODDIR/features/security_patch.sh"
   }
 
   _feature_should_run "keybox" && {
     log_u "ACTION" ""
     log_u "ACTION" "-> Keybox:"
-    sh "$MODDIR/features/keybox.sh" --if-needed || true
+    _action_feature sh "$MODDIR/features/keybox.sh" --if-needed
   }
 
   if _feature_should_run "pif"; then
@@ -86,13 +102,13 @@ _force_hma=$(cfg_get toggle_action_force_hma 0)
         log_i "ACTION" "Existing fingerprint valid, skipping fetch"
       else
         log_i "ACTION" "Fingerprint invalid or missing, fetching new"
-        sh "$MODDIR/features/pif.sh" || true
+        _action_feature sh "$MODDIR/features/pif.sh"
       fi
       _pif_skip=1
     fi
     unset _pif_name
     if [ -z "$_pif_skip" ] && [ -f "$MODDIR/features/pif.sh" ]; then
-      sh "$MODDIR/features/pif.sh" || true
+      _action_feature sh "$MODDIR/features/pif.sh"
     fi
   fi
 
@@ -105,7 +121,7 @@ _force_hma=$(cfg_get toggle_action_force_hma 0)
     done
     if [ "$_first_boot" = "1" ] || [ "$_force_hma" = "1" ] || [ "$_hma_config_ok" != "1" ] || [ "$(cfg_get toggle_auto_hma 1)" != "1" ]; then
       [ "$_hma_config_ok" != "1" ] && log_w "ACTION" "HMA config missing, regenerating"
-      SPECTER_HMA_NO_UI_RELOAD=1 sh "$MODDIR/features/hma.sh" || true
+      SPECTER_HMA_NO_UI_RELOAD=1 _action_feature sh "$MODDIR/features/hma.sh"
 
       _hma_policy=$(_hma_launch_policy)
       _do_launch=0
@@ -137,21 +153,29 @@ _force_hma=$(cfg_get toggle_action_force_hma 0)
   fi
   unset _force_target _force_hma
 
-  run_device_info "$MODDIR"
-  sh "$MODDIR/features/keybox_info.sh" --if-needed >/dev/null 2>&1 || true
-  sh "$MODDIR/features/keystore_info.sh" >/dev/null 2>&1 || true
+  _action_feature run_device_info "$MODDIR"
+  _action_feature sh "$MODDIR/features/keybox_info.sh" --if-needed >/dev/null
+  _action_feature sh "$MODDIR/features/keystore_info.sh" >/dev/null
 
   [ -f "$MODDIR/module.prop.bak" ] && cp "$MODDIR/module.prop.bak" "$MODDIR/module.prop"
   . "$MODDIR/lib/desc.sh"
-  refresh_module_description
+  _action_feature refresh_module_description
 
   log_u "ACTION" ""
-  log_i "ACTION" "Full integrity pipeline completed"
+  if [ "$_action_code" -eq 0 ]; then
+    log_i "ACTION" "Full integrity pipeline completed"
+  else
+    log_e "ACTION" "Integrity pipeline completed with errors; see $ACTION_LOG"
+  fi
+  printf '%s\n' "$_action_code" > "$_action_status"
 } 2>&1 | tee -a "$ACTION_LOG"
+_action_code=$(cat "$_action_status")
+_action_summary="Full integrity pipeline completed"
+[ "$_action_code" -eq 0 ] || _action_summary="Integrity pipeline completed with errors; see action.log"
 
 if [ "$_first_boot" = "0" ]; then
-  printf '{"script":"action.sh","output":"Full integrity pipeline completed","time":"%s","code":0}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$SPECTER_DIR/log/history.jsonl"
+  printf '{"script":"action.sh","output":"%s","time":"%s","code":%s}\n' "$_action_summary" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$_action_code" >> "$SPECTER_DIR/log/history.jsonl"
 fi
 
 echo "Action has ended, please exit"
-exit 0
+exit "$_action_code"

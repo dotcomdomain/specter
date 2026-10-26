@@ -15,7 +15,7 @@ export interface LogEntry {
   error?: boolean;
 }
 
-type LogTab = 'action' | 'boot' | 'live';
+type LogTab = 'action' | 'boot' | 'keybox' | 'live';
 
 const MAX_LOGS = 2000;
 const liveHistory: LogEntry[] = [];
@@ -77,6 +77,7 @@ async function fetchEntriesForTab(tab: LogTab): Promise<LogEntry[]> {
   if (tab === 'boot') {
     return loadDeviceLog('boot.log');
   }
+  if (tab === 'keybox') return loadDeviceLog('keybox.log');
   return [...liveHistory];
 }
 
@@ -111,6 +112,8 @@ export async function clearCurrentLog() {
     await exec(`: > ${shellEscape(dir + '/log/action.log')} 2>/dev/null || true`);
   } else if (currentLogType === 'boot') {
     await exec(`: > ${shellEscape(dir + '/log/boot.log')} 2>/dev/null || true`);
+  } else if (currentLogType === 'keybox') {
+    await exec(`: > ${shellEscape(dir + '/log/keybox.log')} 2>/dev/null || true`);
   } else {
     liveHistory.length = 0;
   }
@@ -171,6 +174,7 @@ export async function openLogsSubPage() {
                   <md-outlined-segmented-button-set id="logs-tab-set">
                     <md-outlined-segmented-button value="action" label="Action" ${currentLogType === 'action' ? 'selected' : ''}></md-outlined-segmented-button>
                     <md-outlined-segmented-button value="boot" label="Boot" ${currentLogType === 'boot' ? 'selected' : ''}></md-outlined-segmented-button>
+                    <md-outlined-segmented-button value="keybox" label="Keybox" ${currentLogType === 'keybox' ? 'selected' : ''}></md-outlined-segmented-button>
                     <md-outlined-segmented-button value="live" label="Live" ${currentLogType === 'live' ? 'selected' : ''}></md-outlined-segmented-button>
                   </md-outlined-segmented-button-set>
                 </div>
@@ -190,7 +194,7 @@ export async function openLogsSubPage() {
               host.querySelectorAll('#logs-tab-set md-outlined-segmented-button').forEach((button) => {
                 button.addEventListener('click', () => {
                   const tab = button.getAttribute('value');
-                  if (tab === 'action' || tab === 'boot' || tab === 'live') {
+                  if (tab === 'action' || tab === 'boot' || tab === 'keybox' || tab === 'live') {
                     if (tab !== currentLogType) {
                       currentLogType = tab;
                       renderCurrentLog().catch(console.error);

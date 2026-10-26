@@ -107,7 +107,16 @@ _apply_toggle_defaults() {
 # -- Utilities --
 ensure_dir() { mkdir -p "$1" 2>/dev/null; }
 
-_escape_json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+_escape_json() {
+  printf '%s' "$1" | awk 'BEGIN { ORS="" } {
+    if (NR > 1) printf "\\n"
+    gsub(/\\/, "\\\\")
+    gsub(/"/, "\\\"")
+    gsub(/\r/, "\\r")
+    gsub(/\t/, "\\t")
+    printf "%s", $0
+  }'
+}
 
 version_ge() {
   _v_a="$1" _v_b="$2"

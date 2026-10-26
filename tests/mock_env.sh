@@ -1,13 +1,15 @@
 # shellcheck shell=sh
 REPO_ROOT="${REPO_ROOT:-${SPECTER_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd 2>/dev/null || pwd)}}"
-TEST_ROOT="${SPECTER_TEST_ROOT:-$(mktemp -d /tmp/specter_test_XXXX)}"
+TEST_ROOT="${SPECTER_TEST_ROOT:-$(mktemp -d ${TMPDIR:-/tmp}/specter_test_XXXX)}"
 export TEST_ROOT REPO_ROOT
+SPECTER_TEST_PATH="${SPECTER_TEST_PATH:-$PATH}"
+export SPECTER_TEST_PATH
 
 cleanup() { [ -n "$TEST_ROOT" ] && rm -rf "$TEST_ROOT" 2>/dev/null || true; }
 
 bootstrap() {
   cleanup 2>/dev/null
-  TEST_ROOT=$(mktemp -d /tmp/specter_test_XXXX)
+  TEST_ROOT=$(mktemp -d ${TMPDIR:-/tmp}/specter_test_XXXX)
   export TEST_ROOT
   MOCK_DIR="$TEST_ROOT/mock"; PROPS_DIR="$MOCK_DIR/props"; LOGS_DIR="$MOCK_DIR/logs"
   BIN_DIR="$TEST_ROOT/bin"; CONFIG_DIR="$TEST_ROOT/config"
@@ -68,10 +70,13 @@ case "$1" in ctl.stop) echo "CTL_STOP $2" >> "$LOGS_DIR/resetprop.log" ;; *) pri
 MOCK
   chmod +x "$BIN_DIR/setprop"
 
-  for _cmd in content settings am pgrep sha256sum dd blockdev od kill; do
+  for _cmd in cmd content settings am pgrep sha256sum dd blockdev od kill; do
     printf '#!/bin/sh\necho "mock %s"\n' "$_cmd" > "$BIN_DIR/$_cmd"
     chmod +x "$BIN_DIR/$_cmd"
   done
+
+  printf '#!/bin/sh\nexit 1\n' > "$BIN_DIR/cmd"
+  chmod +x "$BIN_DIR/cmd"
 
   cat > "$BIN_DIR/find" << 'MOCK'
 #!/bin/sh
@@ -82,7 +87,7 @@ MOCK
 }
 
 source_libs() {
-  PATH="$BIN_DIR:/usr/bin:/bin"
+  PATH="$BIN_DIR:$SPECTER_TEST_PATH"
   . "$REPO_ROOT/src/lib/log.sh" 2>/dev/null
   . "$REPO_ROOT/src/lib/constants.sh" 2>/dev/null
   . "$REPO_ROOT/src/lib/network.sh" 2>/dev/null
@@ -127,11 +132,11 @@ mk_module() {
 
 run_feature() {
   _feature="$1"; shift
-  PATH="$BIN_DIR:/usr/bin:/bin" MODDIR="$TEST_ROOT" SPECTER_DIR="$SPECTER_DIR" CONFIG_DIR="$CONFIG_DIR" TRICKY_DIR="$TRICKY_DIR" sh "$REPO_ROOT/src/features/$_feature" "$@" 2>&1
+  PATH="$BIN_DIR:$SPECTER_TEST_PATH" MODDIR="$TEST_ROOT" SPECTER_DIR="$SPECTER_DIR" CONFIG_DIR="$CONFIG_DIR" TRICKY_DIR="$TRICKY_DIR" sh "$REPO_ROOT/src/features/$_feature" "$@" 2>&1
 }
 
 source_feature() {
-  PATH="$BIN_DIR:/usr/bin:/bin" MODDIR="$TEST_ROOT" SPECTER_DIR="$SPECTER_DIR" CONFIG_DIR="$CONFIG_DIR" . "$REPO_ROOT/src/features/$1" 2>/dev/null || true
+  PATH="$BIN_DIR:$SPECTER_TEST_PATH" MODDIR="$TEST_ROOT" SPECTER_DIR="$SPECTER_DIR" CONFIG_DIR="$CONFIG_DIR" . "$REPO_ROOT/src/features/$1" 2>/dev/null || true
 }
 
 set_cfg() { mkdir -p "$CONFIG_DIR/val" && printf '%s' "$2" > "$CONFIG_DIR/val/$1.val"; }

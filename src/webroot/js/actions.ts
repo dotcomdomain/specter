@@ -1,4 +1,5 @@
 import { spawnScript } from './bridge.js';
+import { cfgFlush } from './cfg.js';
 import { appendToOutput } from './terminal.js';
 import { showToast } from './toast.js';
 import { showErrorDialog } from './dialog.js';
@@ -21,7 +22,7 @@ async function confirmDestructive(friendlyName: string, msgKey?: string): Promis
         ${escapeHtml(friendlyName)}
       </div>
       <div slot="content">
-        <p class="danger-dialog-msg">${escapeHtml(msg)}</p>
+        <p class="danger-dialog-msg">${msg}</p>
       </div>
       <div slot="actions">
         <md-text-button id="danger-cancel">${getTranslation('dialog_cancel') || 'Cancel'}</md-text-button>
@@ -36,6 +37,12 @@ async function confirmDestructive(friendlyName: string, msgKey?: string): Promis
 }
 
 export async function runAction(scriptName: string) {
+  try {
+    await cfgFlush();
+  } catch (error) {
+    showErrorDialog(getTranslation('error_dialog_title') || 'Error Details', String(error));
+    return false;
+  }
   const i18nKey = getFriendlyName(scriptName);
   const friendlyName = getTranslation(i18nKey) || i18nKey;
   const lines: string[] = [];
@@ -47,7 +54,8 @@ export async function runAction(scriptName: string) {
   if (text) text.textContent = getTranslation('simple_dialog_wait') || 'This may take a moment';
   if (dialog) dialog.show();
 
-  return new Promise<void>(resolve => {
+  return new Promise<boolean>(resolve => {
+    let completed = false;
     const child = spawnScript(scriptName, 'feature');
     child.stdout.on('data', (line: string) => {
       appendToOutput(line);
@@ -58,6 +66,8 @@ export async function runAction(scriptName: string) {
       lines.push('[!] ' + line);
     });
     child.on('exit', (code: number) => {
+      if (completed) return;
+      completed = true;
       const output = lines.join('\n');
       appendToOutput(`> ${friendlyName} exited (code: ${code})`);
       addEntry(scriptName, output, code);
@@ -67,14 +77,16 @@ export async function runAction(scriptName: string) {
         showToast(`${getTranslation('simple_toast_error') || 'Failed'}: ${errorMsg}`, {
           icon: 'error', type: 'error',
           action: getTranslation('simple_toast_view_details') || 'View Details', autoCloseDelay: 8000,
-          onActionClick: () => showErrorDialog(getTranslation('error_dialog_title') || 'Error Details', escapeHtml(output)),
+          onActionClick: () => showErrorDialog(getTranslation('error_dialog_title') || 'Error Details', output),
         });
       } else {
         showToast(getTranslation('toast_success') || 'Done', { icon: 'check_circle', type: 'success', autoCloseDelay: 3000 });
       }
-      resolve();
+      resolve(code === 0);
     });
     child.on('error', (err: Error) => {
+      if (completed) return;
+      completed = true;
       const msg = err.message || getTranslation('simple_toast_error') || 'Failed';
       appendToOutput(`> Error: ${msg}`, true);
       addEntry(scriptName, msg, 1);
@@ -82,9 +94,9 @@ export async function runAction(scriptName: string) {
       showToast(`${getTranslation('simple_toast_error') || 'Failed'}: ${friendlyName}`, {
         icon: 'error', type: 'error',
         action: getTranslation('simple_toast_view_details') || 'View Details', autoCloseDelay: 8000,
-        onActionClick: () => showErrorDialog(getTranslation('error_dialog_title') || 'Error Details', escapeHtml(msg)),
+        onActionClick: () => showErrorDialog(getTranslation('error_dialog_title') || 'Error Details', msg),
       });
-      resolve();
+      resolve(false);
     });
   });
 }
@@ -106,7 +118,7 @@ export function wireActions() {
       (el as HTMLButtonElement).disabled = true;
       spinner?.classList.remove('hidden');
       try {
-        await runAction(scriptName);
+        if (!await runAction(scriptName)) return;
         if (scriptName === 'restore_defaults.sh') {
           const { refreshControlToggles } = await import('./toggles.js');
           await refreshControlToggles();
